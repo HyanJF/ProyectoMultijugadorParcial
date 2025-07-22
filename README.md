@@ -61,6 +61,11 @@
 1. **Clona el repositorio**:
    ```bash
    git clone https://github.com/HyanJF/ProyectoMultijugadorParcial.git
+2. **Referencia del arte**
+   https://assetstore.unity.com/packages/3d/characters/creatures/monster-mutant-7-188552
+   https://assetstore.unity.com/packages/3d/environments/dungeons/dungeon-modular-pack-295430
+   https://assetstore.unity.com/packages/3d/props/guns/low-poly-smg-weapon-pack-3-318173
+   https://assetstore.unity.com/packages/tools/network/mirror-129321
 
 ### Vista general del gameplay
 
