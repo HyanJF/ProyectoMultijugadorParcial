@@ -26,25 +26,42 @@ public class Jugador : NetworkBehaviour
     private float netSpeed;
 
     [SyncVar(hook = nameof(OnHealthChanged))]
-    private int hp = 100;
-    private int maxHp = 100;
+    public int hp = 100;
+    public int maxHp = 100;
 
-    [SyncVar]
+    [SyncVar(hook = nameof(OnScoreChanged))]
     private int score = 0;
+
+    private PlayerUIManager localUI;
+
+    public override void OnStartLocalPlayer()
+    {
+        base.OnStartLocalPlayer();
+
+        if (camTransform != null)
+            camTransform.gameObject.SetActive(true);
+
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+
+        localUI = Object.FindFirstObjectByType<PlayerUIManager>();
+
+        if (localUI != null)
+        {
+            localUI.UpdateUI(gameObject.name, (float)hp / maxHp, score);
+        }
+    }
+
 
     void Start()
     {
         _rb = GetComponent<Rigidbody>();
 
-        if (isLocalPlayer)
+        if (!isLocalPlayer)
         {
-            camTransform.gameObject.SetActive(true);
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
-        }
-        else
-        {
-            camTransform.gameObject.SetActive(false);
+            // Desactivar la cámara para otros jugadores
+            if (camTransform != null)
+                camTransform.gameObject.SetActive(false);
         }
     }
 
@@ -52,7 +69,6 @@ public class Jugador : NetworkBehaviour
     {
         if (!isLocalPlayer || !isAlive) return;
 
-        // Input de movimiento
         float h = Input.GetAxis("Horizontal");
         float v = Input.GetAxis("Vertical");
         _moveDirection = new Vector3(h, 0, v);
@@ -61,7 +77,6 @@ public class Jugador : NetworkBehaviour
         Vector3 worldMove = Quaternion.LookRotation(flatForward) * _moveDirection;
         _rb.AddForce(worldMove * moveSpeed, ForceMode.Impulse);
 
-        // Limitar velocidad
         Vector3 horizontalVelocity = new Vector3(_rb.linearVelocity.x, 0, _rb.linearVelocity.z);
         if (horizontalVelocity.magnitude > speedLimit)
         {
@@ -71,7 +86,6 @@ public class Jugador : NetworkBehaviour
 
         _rb.AddForce(Vector3.down * 50f, ForceMode.Acceleration);
 
-        // Enviar velocidad al servidor
         float inputSpeed = new Vector2(h, v).magnitude;
         CmdSetSpeed(inputSpeed);
     }
@@ -80,7 +94,6 @@ public class Jugador : NetworkBehaviour
     {
         if (!isLocalPlayer || !isAlive) return;
 
-        // Control de cámara
         _yaw += Input.GetAxis("Mouse X") * camSpeed;
         _pitch -= Input.GetAxis("Mouse Y") * camSpeed;
         _pitch = Mathf.Clamp(_pitch, -maxPitch, maxPitch);
@@ -88,7 +101,6 @@ public class Jugador : NetworkBehaviour
         transform.eulerAngles = new Vector3(0, _yaw, 0);
         camTransform.localEulerAngles = new Vector3(_pitch, 0, 0);
 
-        // Disparar con clic izquierdo
         if (Input.GetMouseButtonDown(0))
         {
             Disparar();
@@ -98,19 +110,28 @@ public class Jugador : NetworkBehaviour
     void Disparar()
     {
         Ray ray = new Ray(camTransform.position, camTransform.forward);
-        Debug.DrawRay(ray.origin, ray.direction * 100f, Color.red, 2f);
-
         if (Physics.Raycast(ray, out RaycastHit hit, 100f))
         {
             if (hit.collider.CompareTag("Enemigo"))
             {
-                Debug.Log("¡Disparo al enemigo!");
-                hit.collider.GetComponent<Enemigo>()?.TakeDamage(10);
+                NetworkIdentity netId = hit.collider.GetComponent<NetworkIdentity>();
+                if (netId != null)
+                {
+                    CmdDispararEnemigo(netId);
+                }
             }
         }
     }
 
-    // Método para recibir daño
+    [Command]
+    void CmdDispararEnemigo(NetworkIdentity enemyId)
+    {
+        if (enemyId != null && enemyId.TryGetComponent<Enemigo>(out Enemigo enemigo))
+        {
+            enemigo.TakeDamage(10, netIdentity);
+        }
+    }
+
     [Server]
     public void TakeDamage(int amount)
     {
@@ -122,11 +143,9 @@ public class Jugador : NetworkBehaviour
             hp = 0;
             isAlive = false;
             Debug.Log($"Jugador {name} ha muerto.");
-            // Aquí puedes agregar lógica de muerte (desactivar controles, etc)
         }
     }
 
-    // Método para sumar puntos
     [Server]
     public void AddPoints(int amount)
     {
@@ -146,43 +165,51 @@ public class Jugador : NetworkBehaviour
 
     void OnHealthChanged(int oldHp, int newHp)
     {
-        Debug.Log($"HP cambió de {oldHp} a {newHp}");
-        // Aquí podrías actualizar UI o efectos visuales
+        if (!isLocalPlayer) return;
+
+        float hpPercent = (float)newHp / maxHp;
+        localUI?.UpdateUI(gameObject.name, hpPercent, score);
+    }
+
+    void OnScoreChanged(int oldScore, int newScore)
+    {
+        if (!isLocalPlayer) return;
+
+        localUI?.UpdateUI(gameObject.name, (float)hp / maxHp, newScore);
     }
 
     void OnAliveChanged(bool oldAlive, bool newAlive)
     {
+        if (!isLocalPlayer) return;
+
         if (!newAlive)
         {
             Debug.Log("Jugador muerto");
-            if (isLocalPlayer)
-            {
-                // Por ejemplo: bloquear controles, mostrar UI muerte
-                Cursor.lockState = CursorLockMode.None;
-                Cursor.visible = true;
-            }
-            camTransform.gameObject.SetActive(false);
-            // Desactivar otras cosas si quieres
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+            if (camTransform != null)
+                camTransform.gameObject.SetActive(false);
         }
         else
         {
             Debug.Log("Jugador revivido");
             hp = maxHp;
-            if (isLocalPlayer)
-            {
-                Cursor.lockState = CursorLockMode.Locked;
-                Cursor.visible = false;
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+            if (camTransform != null)
                 camTransform.gameObject.SetActive(true);
-            }
-            // Reactivar otras cosas
         }
     }
-
-    // Comandos
 
     [Command]
     void CmdSetSpeed(float speed)
     {
         netSpeed = speed;
     }
+
+    public bool EstaVivo()
+    {
+        return isAlive;
+    }
+
 }

@@ -55,6 +55,7 @@ MonoBehaviour:
   syncDirection: 0
   syncMode: 0
   syncInterval: 0
+  playerUIPrefab: {fileID: 2485991462926041337, guid: 9a730ae86577db64aa2a5352f95e334b, type: 3}
   moveSpeed: 4
   speedLimit: 4
   camSpeed: 5

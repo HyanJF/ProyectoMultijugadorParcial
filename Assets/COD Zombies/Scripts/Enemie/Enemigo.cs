@@ -1,63 +1,68 @@
 using UnityEngine;
 using Mirror;
+using System;
 
 public class Enemigo : NetworkBehaviour
 {
-    [Header("Stats")]
-    [SyncVar(hook = nameof(OnHealthChanged))]
-    public int health = 20;
-    public int maxHealth = 20;
-    public int damage = 5;
-    public float moveSpeed = 3f;
+    [Header("Movimiento")]
+    public float speed = 2f;
+    public float detectionRange = 20f;
     public float attackRange = 2f;
     public float attackCooldown = 2f;
 
-    [Header("References")]
+    [Header("Vida")]
+    [SyncVar]
+    public int vida = 100;
+
+    [Header("Animaciones")]
     public Animator animator;
-    private Rigidbody _rb;
 
-    private float _attackTimer = 0f;
     private Transform targetPlayer;
+    private float nextUpdateTime = 0f;
+    private float updateRate = 1f;
+    private float lastAttackTime;
 
-    void Start()
-    {
-        _rb = GetComponent<Rigidbody>();
-        health = maxHealth;
-    }
+    public event Action OnEnemyDeath;
 
-    void Update()
-    {
-        if (!isServer) return; // Solo servidor controla IA
-
-        if (targetPlayer == null || !targetPlayer.gameObject.activeInHierarchy || Vector3.Distance(transform.position, targetPlayer.position) > 20f)
-        {
-            FindClosestPlayer();
-        }
-
-        _attackTimer -= Time.deltaTime;
-    }
-
-    void FixedUpdate()
+    private void Update()
     {
         if (!isServer) return;
+
+        // Verificar si el objetivo actual está inactivo o muerto
+        if (targetPlayer == null || !targetPlayer.gameObject.activeInHierarchy || targetPlayer.GetComponent<Jugador>()?.hp <= 0)
+        {
+            FindClosestPlayer(); // Buscar otro
+        }
+
+        if (Time.time >= nextUpdateTime)
+        {
+            FindClosestPlayer();
+            nextUpdateTime = Time.time + updateRate;
+        }
 
         if (targetPlayer != null)
         {
             float distance = Vector3.Distance(transform.position, targetPlayer.position);
 
-            if (distance > attackRange)
+            if (distance <= attackRange)
             {
-                MoveTowards(targetPlayer.position);
+                if (Time.time - lastAttackTime >= attackCooldown)
+                {
+                    lastAttackTime = Time.time;
+                    AttackPlayer();
+                }
+
+                SetAnimationMoving(false);
+            }
+            else if (distance <= detectionRange)
+            {
+                Vector3 direction = (targetPlayer.position - transform.position).normalized;
+                transform.position += direction * speed * Time.deltaTime;
                 SetAnimationMoving(true);
             }
             else
             {
                 SetAnimationMoving(false);
-                if (_attackTimer <= 0f)
-                {
-                    Attack(targetPlayer);
-                    _attackTimer = attackCooldown;
-                }
             }
         }
         else
@@ -69,91 +74,97 @@ public class Enemigo : NetworkBehaviour
     void FindClosestPlayer()
     {
         float closestDistance = Mathf.Infinity;
-        Transform closestPlayer = null;
+        Transform closest = null;
 
-        foreach (var conn in NetworkServer.connections.Values)
+        foreach (Jugador player in FindObjectsByType<Jugador>(FindObjectsSortMode.None))
         {
-            if (conn == null) continue;
-            GameObject playerGO = conn.identity.gameObject;
-            if (playerGO == null || !playerGO.activeInHierarchy) continue;
+            if (!player.isActiveAndEnabled || player.hp <= 0) continue;
 
-            float dist = Vector3.Distance(transform.position, playerGO.transform.position);
+            float dist = Vector3.Distance(transform.position, player.transform.position);
             if (dist < closestDistance)
             {
                 closestDistance = dist;
-                closestPlayer = playerGO.transform;
+                closest = player.transform;
             }
         }
-        targetPlayer = closestPlayer;
+
+        targetPlayer = closest;
     }
 
-    void MoveTowards(Vector3 destination)
+    void AttackPlayer()
     {
-        Vector3 direction = (destination - transform.position).normalized;
-        Vector3 move = direction * moveSpeed * Time.fixedDeltaTime;
-        _rb.MovePosition(transform.position + move);
+        if (targetPlayer == null) return;
 
-        Quaternion lookRotation = Quaternion.LookRotation(direction);
-        transform.rotation = Quaternion.Slerp(transform.rotation, lookRotation, 5f * Time.fixedDeltaTime);
-    }
-
-    void Attack(Transform player)
-    {
-        Jugador jugador = player.GetComponent<Jugador>();
+        Jugador jugador = targetPlayer.GetComponent<Jugador>();
         if (jugador != null)
         {
-            jugador.TakeDamage(damage);
+            jugador.TakeDamage(10);
         }
 
+        RpcPlayHit();
+    }
+
+    [Command]
+    public void CmdTakeDamage(int amount, NetworkIdentity attackerId)
+    {
+        TakeDamage(amount, attackerId);
+    }
+
+    public void TakeDamage(int amount, NetworkIdentity attackerId)
+    {
+        if (!isServer) return;
+
+        vida -= amount;
+
+        if (vida <= 0)
+        {
+            RpcPlayDeath();
+
+            if (attackerId != null)
+            {
+                Jugador jugador = attackerId.GetComponent<Jugador>();
+                if (jugador != null)
+                {
+                    jugador.AddPoints(10);
+                }
+            }
+
+            OnEnemyDeath?.Invoke();
+
+            Destroy(gameObject, 1.5f);
+        }
+        else
+        {
+            RpcPlayHit();
+        }
+    }
+
+    void SetAnimationMoving(bool moving)
+    {
         if (animator != null)
-        {
-            animator.SetTrigger("Attack");
-        }
+            animator.SetBool("Moving", moving);
+
+        RpcSetMovingAnim(moving);
     }
 
-    [Server]
-    public void TakeDamage(int amount, Jugador killer = null)
+    [ClientRpc]
+    void RpcSetMovingAnim(bool moving)
     {
-        health -= amount;
-
-        if (health <= 0)
-        {
-            Die(killer);
-        }
-    }
-
-    [Server]
-    void Die(Jugador killer)
-    {
-        if (killer != null)
-        {
-            killer.AddPoints(10);
-        }
-
-        RpcPlayDeath();
-
-        NetworkServer.Destroy(gameObject);
+        if (!isServer && animator != null)
+            animator.SetBool("Moving", moving);
     }
 
     [ClientRpc]
     void RpcPlayDeath()
     {
         if (animator != null)
-        {
             animator.SetTrigger("Death");
-        }
     }
 
-    void OnHealthChanged(int oldHealth, int newHealth)
-    {
-        // UI o efectos aquí
-    }
-
-    void SetAnimationMoving(bool moving)
+    [ClientRpc]
+    void RpcPlayHit()
     {
         if (animator != null)
-        {
-            animator.SetBool("Moving", moving);
-        }
+            animator.SetTrigger("Hit");
     }
 }
